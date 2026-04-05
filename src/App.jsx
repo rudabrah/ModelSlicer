@@ -307,6 +307,38 @@ function App() {
      right: []
   });
   const [activePointId, setActivePointId] = useState(null);
+  const [history, setHistory] = useState([]);
+
+  const pushToHistory = useCallback(() => {
+    setHistory(prev => {
+      // Clone geometries to preserve them in history
+      const entry = {
+        parts: parts.map(p => ({ ...p, geometry: p.geometry.clone() })),
+        edgePoints: JSON.parse(JSON.stringify(edgePoints)),
+        activePartId: activePartId
+      };
+      const newHistory = [...prev, entry];
+      if (newHistory.length > 5) {
+          // Dispose of the oldest geometry to save memory
+          const oldest = newHistory.shift();
+          oldest.parts.forEach(p => p.geometry.dispose());
+      }
+      return newHistory;
+    });
+  }, [parts, edgePoints, activePartId]);
+
+  const undo = useCallback(() => {
+    if (history.length === 0) return;
+    const last = history[history.length - 1];
+    
+    // Dispose current parts before restoring
+    parts.forEach(p => p.geometry.dispose());
+
+    setParts(last.parts);
+    setEdgePoints(last.edgePoints);
+    setActivePartId(last.activePartId);
+    setHistory(prev => prev.slice(0, -1));
+  }, [history, parts]);
 
   const addPoint = (side) => {
       setEdgePoints(prev => {
@@ -330,6 +362,13 @@ function App() {
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (parts.length === 0 || processing) return;
+
+      if (e.ctrlKey && e.key.toLowerCase() === 'z') {
+          e.preventDefault();
+          undo();
+          return;
+      }
+
       if (e.key.toLowerCase() === 'w') setMode('translate');
       if (e.key.toLowerCase() === 'e') setMode('rotate');
       if (e.key.toLowerCase() === 'r') setMode('scale');
@@ -343,7 +382,7 @@ function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [parts, processing]);
+  }, [parts, processing, undo]);
 
   const handleDrop = useCallback((e) => {
     e.preventDefault();
@@ -353,6 +392,7 @@ function App() {
   const handleDragOver = useCallback((e) => { e.preventDefault(); }, []);
 
   const loadFile = (file) => {
+    pushToHistory();
     setLoading(true);
     setErrorMsg(null);
     const reader = new FileReader();
@@ -424,6 +464,7 @@ function App() {
     setParts(prev => prev.map(p => p.id === partId ? { ...p, visible: !p.visible } : p));
   };
   const deletePart = (partId) => {
+    pushToHistory();
     setParts(prev => prev.filter(p => p.id !== partId));
     if (activePartId === partId) setActivePartId(null);
   };
@@ -431,6 +472,7 @@ function App() {
   const handleCut = () => {
     if (!activePartId || !boxRef.current) return;
     
+    pushToHistory();
     setProcessing(true);
     setErrorMsg(null);
     const targetPart = parts.find(p => p.id === activePartId);
@@ -571,11 +613,22 @@ function App() {
 
       {parts.length > 0 && activePartId && (
         <div style={{ position: 'absolute', bottom: 30, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '15px' }}>
+          {history.length > 0 && (
+             <button 
+               onClick={undo}
+               style={{ 
+                 padding: '12px 24px', fontSize: '1.2rem', backgroundColor: '#444', 
+                 color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold'
+               }}
+             >
+               Angre
+             </button>
+          )}
           <button 
             onClick={handleCut}
             disabled={processing}
             style={{ 
-              padding: '12px 24px', fontSize: '1.2rem', backgroundColor: processing ? '#666' : '#cc0000', 
+              padding: '12px 24px', fontSize: '1.2rem', backgroundColor: processing ? '#633' : '#cc0000', 
               color: 'white', border: 'none', borderRadius: 8, cursor: processing ? 'default' : 'pointer', fontWeight: 'bold'
             }}
           >
