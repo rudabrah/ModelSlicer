@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
-import { OrbitControls, TransformControls, Grid } from '@react-three/drei';
+import { OrbitControls, TransformControls, Grid, GizmoHelper, GizmoViewport, TrackballControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader';
 import { ThreeMFLoader } from 'three/examples/jsm/loaders/3MFLoader';
@@ -12,6 +12,9 @@ class ErrorBoundary extends React.Component {
     super(props);
     this.state = { hasError: false, error: null, errorInfo: null };
   }
+  handleReset = () => {
+    window.location.reload();
+  };
   static getDerivedStateFromError(error) {
     return { hasError: true, error };
   }
@@ -76,7 +79,7 @@ const sideColors = {
   right: "#66ff66"   // Grønn
 };
 
-function Scene({ parts, activePartId, mode, orbitEnabled, setOrbitEnabled, boxRef, controlTarget, partRefs, edgePoints, activePointId, setActivePointId, setEdgePoints }) {
+function Scene({ parts, activePartId, mode, orbitEnabled, setOrbitEnabled, boxRef, controlTarget, partRefs, edgePoints, activePointId, setActivePointId, setEdgePoints, controlsRef }) {
   const { scene } = useThree();
   const pointRefs = useRef({});
   const planes = useMemo(() => Array.from({length: 6}, () => new THREE.Plane()), []);
@@ -154,8 +157,8 @@ function Scene({ parts, activePartId, mode, orbitEnabled, setOrbitEnabled, boxRe
       <directionalLight position={[10, 10, 10]} intensity={1} />
       <axesHelper args={[100]} />
       <Grid infiniteGrid fadeDistance={500} sectionColor="#444" cellColor="#222" />
-
-      <OrbitControls makeDefault enabled={orbitEnabled} />
+      {/* Free 360-degree rotation without "poles" */}
+      <TrackballControls ref={controlsRef} makeDefault rotateSpeed={4.0} zoomSpeed={1.2} panSpeed={0.8} staticMoving={true} />
 
       {parts.filter(p => p.visible).map((part) => (
         <group 
@@ -243,6 +246,8 @@ function Scene({ parts, activePartId, mode, orbitEnabled, setOrbitEnabled, boxRe
         <TransformControls
           object={boxRef.current}
           mode={mode}
+          rotationSnap={Math.PI / 12}
+          translationSnap={1}
           onMouseDown={() => setOrbitEnabled(false)}
           onMouseUp={() => setOrbitEnabled(true)}
         />
@@ -253,6 +258,8 @@ function Scene({ parts, activePartId, mode, orbitEnabled, setOrbitEnabled, boxRe
         <TransformControls
           object={partRefs.current[activePartId]}
           mode={mode}
+          rotationSnap={Math.PI / 12}
+          translationSnap={1}
           onMouseDown={() => setOrbitEnabled(false)}
           onMouseUp={() => setOrbitEnabled(true)}
         />
@@ -283,6 +290,13 @@ function Scene({ parts, activePartId, mode, orbitEnabled, setOrbitEnabled, boxRe
           onChange={() => {}}
         />
       )}
+      {/* Visual orientation gizmo in the corner */}
+      <GizmoHelper
+        alignment="bottom-right"
+        margin={[80, 80]}
+      >
+        <GizmoViewport axisColors={['#ff4444', '#44ff44', '#4444ff']} labelColor="white" />
+      </GizmoHelper>
     </>
   );
 }
@@ -299,6 +313,13 @@ function App() {
 
   const boxRef = useRef();
   const partRefs = useRef({});
+  const controlsRef = useRef();
+
+  // Robust state management for the keyboard listener (avoiding stale closures)
+  const stateRef = useRef({ parts, activePartId, controlTarget, processing });
+  useEffect(() => {
+    stateRef.current = { parts, activePartId, controlTarget, processing };
+  }, [parts, activePartId, controlTarget, processing]);
 
   const [edgePoints, setEdgePoints] = useState({
      top: [],
@@ -361,7 +382,11 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (e) => {
-      if (parts.length === 0 || processing) return;
+      // Use current values from the ref to ensure logic always uses latest state
+      const { parts: currentParts, activePartId: currentActiveId, controlTarget: currentTarget, processing: currentlyProcessing } = stateRef.current;
+      
+      // Also ignore if we are typing in an input (if any)
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
       if (e.ctrlKey && e.key.toLowerCase() === 'z') {
           e.preventDefault();
@@ -379,10 +404,85 @@ function App() {
               return 'boks';
           });
       }
+
+      // --- Arrow Key Navigation ---
+      const moveStep = e.ctrlKey ? 0.1 : 1.0;
+      const rotateStep = Math.PI / 12; // 15 degrees
+      
+      const isArrowKey = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown'].includes(e.key);
+      if (isArrowKey) {
+          e.preventDefault();
+          
+          if (currentTarget === 'boks' && boxRef.current) {
+              if (e.shiftKey) {
+                  if (e.key === 'ArrowLeft') boxRef.current.rotation.y += rotateStep;
+                  if (e.key === 'ArrowRight') boxRef.current.rotation.y -= rotateStep;
+                  if (e.key === 'ArrowUp') boxRef.current.rotation.x -= rotateStep;
+                  if (e.key === 'ArrowDown') boxRef.current.rotation.x += rotateStep;
+              } else {
+                  if (e.key === 'ArrowLeft') boxRef.current.position.x -= moveStep;
+                  if (e.key === 'ArrowRight') boxRef.current.position.x += moveStep;
+                  if (e.key === 'ArrowUp') boxRef.current.position.z -= moveStep;
+                  if (e.key === 'ArrowDown') boxRef.current.position.z += moveStep;
+                  if (e.key === 'PageUp') boxRef.current.position.y += moveStep;
+                  if (e.key === 'PageDown') boxRef.current.position.y -= moveStep;
+              }
+          } else if (currentTarget === 'part' && currentActiveId) {
+              setParts(prev => prev.map(p => {
+                  if (p.id !== currentActiveId) return p;
+                  const pos = [...p.position];
+                  const quat = new THREE.Quaternion(...p.quaternion);
+                  const eul = new THREE.Euler().setFromQuaternion(quat);
+
+                  if (e.shiftKey) {
+                      if (e.key === 'ArrowLeft') eul.y += rotateStep;
+                      if (e.key === 'ArrowRight') eul.y -= rotateStep;
+                      if (e.key === 'ArrowUp') eul.x -= rotateStep;
+                      if (e.key === 'ArrowDown') eul.x += rotateStep;
+                      quat.setFromEuler(eul);
+                      return { ...p, quaternion: quat.toArray() };
+                  } else {
+                      if (e.key === 'ArrowLeft') pos[0] -= moveStep;
+                      if (e.key === 'ArrowRight') pos[0] += moveStep;
+                      if (e.key === 'ArrowUp') pos[2] -= moveStep;
+                      if (e.key === 'ArrowDown') pos[2] += moveStep;
+                      if (e.key === 'PageUp') pos[1] += moveStep;
+                      if (e.key === 'PageDown') pos[1] -= moveStep;
+                      return { ...p, position: pos };
+                  }
+              }));
+          } else {
+              // --- Fallback: Camera Movement (if no target is active) ---
+              if (controlsRef.current) {
+                  // TrackballControls from drei exposes some methods but we can simple rotate/pan the scene/camera
+                  const cam = controlsRef.current.object;
+                  const rotateOrbit = (angle) => {
+                      // Simple rotation around Y for camera
+                      const quat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), angle);
+                      cam.position.applyQuaternion(quat);
+                      cam.lookAt(0, 0, 0); // Re-focus on center (or target)
+                      controlsRef.current.update();
+                  };
+                  
+                  if (e.key === 'ArrowLeft') rotateOrbit(0.1);
+                  if (e.key === 'ArrowRight') rotateOrbit(-0.1);
+                  if (e.key === 'ArrowUp') {
+                      cam.position.y += moveStep * 5;
+                      cam.lookAt(0, 0, 0);
+                      controlsRef.current.update();
+                  }
+                  if (e.key === 'ArrowDown') {
+                      cam.position.y -= moveStep * 5;
+                      cam.lookAt(0, 0, 0);
+                      controlsRef.current.update();
+                  }
+              }
+          }
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [parts, processing, undo]);
+  }, []); // Attached only once!
 
   const handleDrop = useCallback((e) => {
     e.preventDefault();
@@ -536,7 +636,28 @@ function App() {
         onDrop={handleDrop}
         onDragOver={handleDragOver}
       >
-      <Canvas camera={{ position: [50, 50, 100], fov: 45 }} gl={{ localClippingEnabled: true }}>
+      <Canvas 
+        camera={{ position: [50, 50, 100], fov: 45, near: 0.1, far: 5000 }} 
+        gl={{ localClippingEnabled: true }}
+        onWheel={(e) => {
+          if (e.altKey && stateRef.current.activePartId) {
+             // Stop the camera from zooming while we are scaling
+             e.stopPropagation();
+             e.nativeEvent.preventDefault(); 
+             
+             const scaleDir = e.deltaY > 0 ? 0.9 : 1.1;
+             if (controlTarget === 'boks' && boxRef.current) {
+                boxRef.current.scale.multiplyScalar(scaleDir);
+             } else if (controlTarget === 'part') {
+                setParts(prev => prev.map(p => {
+                   if (p.id !== activePartId) return p;
+                   const newScale = p.scale.map(s => s * scaleDir);
+                   return { ...p, scale: newScale };
+                }));
+             }
+          }
+        }}
+      >
         <Scene 
           parts={parts}
           activePartId={activePartId}
@@ -550,33 +671,60 @@ function App() {
           activePointId={activePointId}
           setActivePointId={setActivePointId}
           setEdgePoints={setEdgePoints}
+          controlsRef={controlsRef}
         />
       </Canvas>
 
-      <div style={{ position: 'absolute', top: 20, left: 20, backgroundColor: 'rgba(0,0,0,0.6)', padding: '15px', borderRadius: 8, pointerEvents: 'none' }}>
-        <h1 style={{ margin: '0 0 10px 0', fontSize: '1.2rem' }}>ModelSlicer</h1>
-        {parts.length === 0 ? (
-          <p style={{ margin: 0, opacity: 0.8 }}>Dra og slipp en .STL eller .3MF fil her</p>
-        ) : (
-          <div>
-            <p style={{ margin: '5px 0', fontSize: '0.9rem', color: mode === 'translate' ? '#ffcc00' : 'white' }}>[W] Flytt</p>
-            <p style={{ margin: '5px 0', fontSize: '0.9rem', color: mode === 'rotate' ? '#ffcc00' : 'white' }}>[E] Roter</p>
-            <p style={{ margin: '5px 0', fontSize: '0.9rem', color: mode === 'scale' ? '#ffcc00' : 'white' }}>[R] Skaler</p>
-            <p style={{ margin: '15px 0 5px 0', fontSize: '0.9rem', fontWeight: 'bold', color: '#00ff66' }}>
-              [T] Verktøy: {controlTarget === 'boks' ? 'Styrer Kutteboks' : controlTarget === 'part' ? 'Flytter Modell' : 'Tegn Snitt'}
-            </p>
-            {controlTarget === 'shape' && (
-               <div style={{ marginTop: 15, padding: 10, border: '1px solid #00ffff', pointerEvents: 'auto', backgroundColor: 'rgba(0,0,0,0.8)' }}>
-                  <p style={{ margin: '0 0 10px 0', color: '#00ffff' }}>Legg til punkt på vegg:</p>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px' }}>
-                    <button onClick={() => addPoint('top')} style={{ padding: '6px', cursor: 'pointer', backgroundColor: '#008888', color: 'white', borderLeft: `4px solid ${sideColors.top}` }}>+ Topp</button>
-                    <button onClick={() => addPoint('bottom')} style={{ padding: '6px', cursor: 'pointer', backgroundColor: '#008888', color: 'white', borderLeft: `4px solid ${sideColors.bottom}` }}>+ Bunn</button>
-                    <button onClick={() => addPoint('left')} style={{ padding: '6px', cursor: 'pointer', backgroundColor: '#008888', color: 'white', borderLeft: `4px solid ${sideColors.left}` }}>+ Venstre</button>
-                    <button onClick={() => addPoint('right')} style={{ padding: '6px', cursor: 'pointer', backgroundColor: '#008888', color: 'white', borderLeft: `4px solid ${sideColors.right}` }}>+ Høyre</button>
-                  </div>
-               </div>
-            )}
+      <div style={{ position: 'absolute', top: 20, left: 20, backgroundColor: 'rgba(0,0,0,0.7)', padding: '15px', borderRadius: 8, pointerEvents: 'none', border: '1px solid #444', transition: 'all 0.3s ease' }}>
+        <h1 style={{ margin: '0 0 10px 0', fontSize: '1.2rem', color: '#00ffcc' }}>ModelSlicer</h1>
+        
+        {parts.length > 0 && (
+          <div style={{ marginBottom: 15 }}>
+             <p style={{ margin: '5px 0', fontSize: '0.9rem', fontWeight: 'bold', color: '#00ff66' }}>
+                [T] Verktøy: {controlTarget === 'boks' ? 'Styrer Kutteboks' : controlTarget === 'part' ? 'Flytter Modell' : 'Tegn Snitt'}
+             </p>
+             <p style={{ margin: '2px 0', fontSize: '0.8rem', opacity: 0.7 }}>[W] Flytt | [E] Roter | [R] Skaler</p>
           </div>
+        )}
+
+        <div style={{ padding: '8px', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 4 }}>
+           <h4 style={{ margin: '0 0 5px 0', fontSize: '0.8rem', textTransform: 'uppercase', opacity: 0.5 }}>Kontroller:</h4>
+           <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '5px 10px', fontSize: '0.8rem' }}>
+              <span style={{ color: '#00ffcc', fontWeight: 'bold' }}>Piltaster:</span> <span>Flytt modell / Roter kamera</span>
+              <span style={{ color: '#00ffcc', fontWeight: 'bold' }}>Shift + Pil:</span> <span>Roter modell (15°)</span>
+              <span style={{ color: '#00ffcc', fontWeight: 'bold' }}>Ctrl + Pil:</span> <span>Fin-justering / Panorering</span>
+              <span style={{ color: '#00ffcc', fontWeight: 'bold' }}>Alt + Scroll:</span> <span>Skaler modell (Ingen zoom)</span>
+              <span style={{ color: '#00ffcc', fontWeight: 'bold' }}>[T]:</span> <span>Bytt Verktøy (Boks/Modell)</span>
+           </div>
+        </div>
+
+        <button 
+           onClick={() => {
+              if (controlsRef.current) {
+                 controlsRef.current.reset();
+              }
+           }}
+           style={{ marginTop: 15, width: '100%', padding: '8px', cursor: 'pointer', backgroundColor: '#333', color: '#ccc', border: '1px solid #555', borderRadius: 4, fontSize: '0.8rem', pointerEvents: 'auto' }}
+        >
+           🔄 Nullstill Kamera
+        </button>
+
+        {parts.length === 0 && (
+          <p style={{ margin: '15px 0 0 0', opacity: 0.8, fontSize: '0.9rem', borderTop: '1px solid #333', paddingTop: '10px' }}>
+            💡 Dra og slipp en .STL eller .3MF fil her for å starte
+          </p>
+        )}
+
+        {controlTarget === 'shape' && (
+           <div style={{ marginTop: 15, padding: 10, border: '1px solid #00ffff', pointerEvents: 'auto', backgroundColor: 'rgba(0,0,0,0.8)' }}>
+              <p style={{ margin: '0 0 10px 0', color: '#00ffff' }}>Legg til punkt på vegg:</p>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px' }}>
+                <button onClick={() => addPoint('top')} style={{ padding: '6px', cursor: 'pointer', backgroundColor: '#008888', color: 'white', borderLeft: `4px solid ${sideColors.top}` }}>+ Topp</button>
+                <button onClick={() => addPoint('bottom')} style={{ padding: '6px', cursor: 'pointer', backgroundColor: '#008888', color: 'white', borderLeft: `4px solid ${sideColors.bottom}` }}>+ Bunn</button>
+                <button onClick={() => addPoint('left')} style={{ padding: '6px', cursor: 'pointer', backgroundColor: '#008888', color: 'white', borderLeft: `4px solid ${sideColors.left}` }}>+ Venstre</button>
+                <button onClick={() => addPoint('right')} style={{ padding: '6px', cursor: 'pointer', backgroundColor: '#008888', color: 'white', borderLeft: `4px solid ${sideColors.right}` }}>+ Høyre</button>
+              </div>
+           </div>
         )}
       </div>
 
