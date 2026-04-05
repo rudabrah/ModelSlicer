@@ -5,45 +5,49 @@ ModelSlicer er født ut av behovet for å kunne dele opp store STL/3MF-filer lok
 
 ---
 
-## 🚀 Hovedfunksjoner
+## 🚀 Hovedfunksjoner (Session Update: 2026-04-05)
 
-### 1. Formbare Kutt (Zigzag & Kurver)
-Glem kjedelige, flate kutt. I **Tegn Snitt**-modus kan du legge til knekkpunkter på alle fire sider av kutteboksen for å lage:
-- **Puslespill-ledd:** For bedre liming og styrke.
-- **Zigzag-mønster:** For å unngå å snitte gjennom skjøre detaljer.
-- **Custom profiler:** Form kutte-verktøyet nøyaktig slik modellen din krever.
+### 1. Multi-Tool Kuttesystem
+Systemet støtter nå ubegrenset antall kutteverktøy samtidig.
+- **+ Ny Boks:** Legg til flere uavhengige kuttebokser i scenen.
+- **Auto-fokus:** Trykk på ønsket boks for å flytte gizmo-kontrollene dit umiddelbart.
+- **Batch Processing:** Kutt utføres mot alle aktive verktøy samtidig.
 
-### 2. Multi-Object Scene Management
-Last inn flere modeller samtidig. Du kan flytte, skalere og rotere hver del individuelt, og utføre kutt på den aktive delen uten at det påvirker de andre.
+### 2. Snap to Face (🎯)
+Hurtigplassering av kuttebokser på modellens overflate.
+- Aktiver **Snap to Face** og klikk på fjeset på modellen.
+- Verktøyet flytter seg automatisk og roterer for å flukte med overflatens normal.
 
-### 3. Smart Visualisering (Ghost Selection)
-Når du beveger kutteboksen, vil innsiden av modellen lyse opp i en dus blåfarge. Dette gir deg 100% nøyaktig oversikt over nøyaktig hva som blir med i snittet før du trykker på knappen.
+### 3. Formbare Kutt (Zigzag & Kurver)
+I **Tegn Snitt**-modus kan du manipulere punkter på veggene for å skape komplekse profiler (puslespill-ledd, mekaniske låser).
 
-### 4. 100% Privat & Lokal (Client-Side)
-Ingen modeller lastes opp til en server. All tung 3D-matematikk (CSG/Boolean) skjer direkte i din egen nettleser ved hjelp av Web Workers og avansert spatial indexing (BVH).
+### 4. Smart Visualisering & Ghosting
+Modellen lyser opp blått der snittet vil treffe, for 100% nøyaktighet før utførelse.
+
+![Final UI State](/public/screenshots/final_ui_state.png)
 
 ---
 
 ## 🛠 Bruksanvisning
 
-1. **Last inn:** Dra og slipp en `.stl` eller `.3mf` fil inn i vinduet.
-2. **Plasser:** Bruk flytteverktøyet (**W, E, R**) for å legge den røde boksen der du vil kutte.
+1. **Last inn:** Dra og slipp en `.stl` eller `.3mf` fil.
+2. **Plasser:** Bruk transform-kontroller (**W, E, R**) eller **🎯 Snap to Face**.
 3. **Form Snittet:** 
-   - Trykk **T** til du er i "Tegn Snitt"-modus. 
-   - Legg til punkter på veggene (Topp/Bunn/Sider) og dra i dem for å lage ønsket form.
-4. **Utfør Kutt:** Trykk på den store røde knappen **"Kutt Aktiv Del"**.
-5. **Separer:** Trykk **T** for å gå over til "Flyt Modell", og dra delene fra hverandre for å inspisere resultatet.
-6. **Eksporter:** Trykk **"Last ned"** i dele-listen til høyre for å få filene klare for din 3D-slicer (Cura, PrusaSlicer, etc).
+    - Trykk **T** til du styrer "Kutteboks". 
+    - Bytt til **Tilpasset Snitt** i sidepanelet for å tegne egne profiler.
+4. **Utfør Kutt:** Trykk på den store knappen **"Kutt Aktiv Del"**.
+5. **Eksporter:** Bruk download-ikonet i delelisten.
 
 ---
 
 ## ⌨️ Hurtigtaster
 | Tast | Funksjon |
 |------|----------|
-| **W** | Flytte-modus (Translate) |
-| **E** | Rotere-modus (Rotate) |
-| **R** | Skalerings-modus (Scale) |
-| **T** | Bla mellom verktøy (Boks -> Modell -> Tegn Snitt) |
+| **W / E / R** | Flytte / Rote / Skaler boks |
+| **[T]** | Rotasjon av kontroll-fokus (Boks <-> Modell <-> Snittfjes) |
+| **Piltaster** | Finjustering av posisjon (Aktiv boks) |
+| **Shift + Pil** | Finjustering av rotasjon (Aktiv boks) |
+| **Alt + Scroll**| Skalering av aktiv del eller boks (avhengig av fokus) |
 
 ---
 
@@ -67,6 +71,22 @@ npm run dev
 - [three-bvh-csg](https://github.com/gkjohnson/three-bvh-csg) - Boolean matematikk
 - [React Three Fiber](https://docs.pmnd.rs/react-three-fiber) - React bro for Three.js
 - [Vite](https://vitejs.dev/) - Frontend Tooling
+
+---
+
+## 📅 Siste Sesjon (2026-04-05)
+**Status: Fullført Avansert Slicing-sprint**
+
+### Oppdateringer:
+- **Refaktorert Arkitektur:** Gått fra én global boks til et dynamisk `cuttingTools`-array. Dette muliggjør komplekse kutt-oppsett.
+- **Snap to Face:** Implementert Raycasting-logikk for å "snappe" verktøy til modellens overflate.
+- **Feilretting:** Løst problem med uthuling (shelling) som krasjet på store filer. Merk: Funksjonen ble til slutt fjernet som redundant etter brukerønske.
+- **Fokus-logikk:** Forbedret `handleKeyDown` med `activeToolId`-tracking for å unngå "stale closures".
+
+### Neste Steg:
+- [ ] Implementere eksport til flere formater (.OBJ, .PLY).
+- [ ] Legge til måleverktøy for avstand mellom to punkter.
+- [ ] Optimalisere CSG-beregning for ekstremt store mesh (100MB+).
 
 ---
 

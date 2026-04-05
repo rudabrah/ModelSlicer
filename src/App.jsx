@@ -79,16 +79,17 @@ const sideColors = {
   right: "#66ff66"   // Grønn
 };
 
-function Scene({ parts, activePartId, mode, orbitEnabled, setOrbitEnabled, boxRef, controlTarget, partRefs, edgePoints, activePointId, setActivePointId, setEdgePoints, controlsRef }) {
+function Scene({ parts, activePartId, mode, orbitEnabled, setOrbitEnabled, partRefs, controlTarget, setControlTarget, edgePoints, activePointId, setActivePointId, setEdgePoints, controlsRef, snapMode, setSnapMode, cuttingTools, setCuttingTools, activeToolId, setActiveToolId, toolRefs, extrudeGeometry, orderedVertices }) {
   const { scene } = useThree();
   const pointRefs = useRef({});
   const planes = useMemo(() => Array.from({length: 6}, () => new THREE.Plane()), []);
 
   // Update highlighting planes to roughly encompass the tool
   useFrame(() => {
-    if (boxRef.current && parts.length > 0) {
-      boxRef.current.updateMatrixWorld();
-      const m = boxRef.current.matrixWorld;
+    const currentBox = toolRefs.current[activeToolId];
+    if (currentBox && parts.length > 0) {
+      currentBox.updateMatrixWorld();
+      const m = currentBox.matrixWorld;
       const normalMatrix = new THREE.Matrix3().getNormalMatrix(m);
       
       const faceData = [
@@ -108,48 +109,12 @@ function Scene({ parts, activePartId, mode, orbitEnabled, setOrbitEnabled, boxRe
     }
   });
 
-// Compute the ordered points for both the line path and the shape
-  const orderedVertices = useMemo(() => {
-     const pts = [];
-     pts.push(new THREE.Vector2(-0.5, 0.5)); // Top-Left
-     
-     const top = [...edgePoints.top].sort((a,b) => a.x - b.x);
-     top.forEach(p => pts.push(new THREE.Vector2(p.x, p.y)));
-     
-     pts.push(new THREE.Vector2(0.5, 0.5)); // Top-Right
-     
-     const right = [...edgePoints.right].sort((a,b) => b.y - a.y);
-     right.forEach(p => pts.push(new THREE.Vector2(p.x, p.y)));
-     
-     pts.push(new THREE.Vector2(0.5, -0.5)); // Bottom-Right
-     
-     const bottom = [...edgePoints.bottom].sort((a,b) => b.x - a.x);
-     bottom.forEach(p => pts.push(new THREE.Vector2(p.x, p.y)));
-     
-     pts.push(new THREE.Vector2(-0.5, -0.5)); // Bottom-Left
-     
-     const left = [...edgePoints.left].sort((a,b) => a.y - b.y);
-     left.forEach(p => pts.push(new THREE.Vector2(p.x, p.y)));
-
-     return pts;
-  }, [edgePoints]);
 
   const lineGeometry = useMemo(() => {
      const points3D = orderedVertices.map(v => new THREE.Vector3(v.x, v.y, 0));
      return new THREE.BufferGeometry().setFromPoints(points3D);
   }, [orderedVertices]);
 
-  // Construct ExtrudeGeometry dynamically from edgePoints
-  const extrudeGeometry = useMemo(() => {
-     const shape = new THREE.Shape(orderedVertices);
-     const geo = new THREE.ExtrudeGeometry(shape, {
-        depth: 1,
-        bevelEnabled: false,
-     });
-     // Center the depth from Z=0 to Z=-0.5
-     geo.translate(0, 0, -0.5);
-     return geo;
-  }, [orderedVertices]);
 
   return (
     <>
@@ -168,12 +133,46 @@ function Scene({ parts, activePartId, mode, orbitEnabled, setOrbitEnabled, boxRe
            quaternion={part.quaternion}
            scale={part.scale}
         >
-           <mesh geometry={part.geometry}>
+           <mesh 
+             geometry={part.geometry}
+             onPointerDown={(e) => {
+               if (snapMode && toolRefs.current[activeToolId]) {
+                 e.stopPropagation();
+                 const normal = e.face.normal.clone();
+                 // Normal is in local space, transform it to world space
+                 const normalMatrix = new THREE.Matrix3().getNormalMatrix(e.object.matrixWorld);
+                 normal.applyMatrix3(normalMatrix).normalize();
+                 
+                 // Intersection point in world space
+                 const point = e.point;
+                 
+                 // Align box:
+                 // We want the box's "cut axis" (Z) to point along the normal
+                 const up = new THREE.Vector3(0, 1, 0);
+                 if (Math.abs(normal.dot(up)) > 0.99) up.set(1, 0, 0); // Avoid gimbal lock
+                 
+                 const lookAtMatrix = new THREE.Matrix4().lookAt(
+                   new THREE.Vector3(0, 0, 0),
+                   normal,
+                   up
+                 );
+                 
+                 const activeTool = toolRefs.current[activeToolId];
+                 activeTool.position.copy(point);
+                 activeTool.quaternion.setFromRotationMatrix(lookAtMatrix);
+                 
+                 setSnapMode(false); // Turn off after use
+                 setControlTarget('boks');
+               }
+             }}
+           >
              <meshStandardMaterial 
-               color={part.id === activePartId ? "#886600" : "#aaaaaa"} 
+               color={part.id === activePartId ? (snapMode ? "#ff00ff" : "#886600") : (snapMode ? "#ffccff" : "#aaaaaa")} 
                roughness={0.4} 
                metalness={0.1} 
                side={THREE.DoubleSide} 
+               opacity={snapMode ? 0.9 : 1.0}
+               transparent={snapMode}
              />
            </mesh>
 
@@ -194,64 +193,72 @@ function Scene({ parts, activePartId, mode, orbitEnabled, setOrbitEnabled, boxRe
         </group>
       ))}
 
-      {/* The Cutting Box (Custom Tool Volume) */}
-      {parts.length > 0 && activePartId && (
-        <group ref={(el) => { if (el) boxRef.current = el; }} position={[0,0,0]}>
-          <mesh name="toolMesh" geometry={extrudeGeometry}>
-             {controlTarget === 'boks' ? (
-               <meshBasicMaterial color="#ff0000" transparent opacity={0.15} depthWrite={false} side={THREE.DoubleSide} />
-             ) : controlTarget === 'shape' ? (
-               <meshBasicMaterial color="#00ffff" transparent opacity={0.2} depthWrite={false} side={THREE.DoubleSide} />
-             ) : (
-               <meshBasicMaterial color="#ff0000" wireframe transparent opacity={0.1} depthWrite={false} /> 
-             )}
-          </mesh>
+      {/* Render All Cutting Tools */}
+      {cuttingTools.map((tool) => (
+        <group 
+          key={tool.id} 
+          ref={(el) => { if (el) toolRefs.current[tool.id] = el; }}
+          position={tool.position}
+          rotation={tool.rotation}
+          scale={tool.scale}
+          onPointerDown={(e) => {
+             e.stopPropagation();
+             setActiveToolId(tool.id);
+             setControlTarget('boks');
+          }}
+        >
+           {/* Visual Volume of the Tool */}
+           <mesh name="toolMesh" geometry={tool.type === 'shape' ? extrudeGeometry : undefined}>
+              {tool.type === 'box' && <boxGeometry args={[1, 1, 1]} />}
+              <meshStandardMaterial 
+                color={tool.id === activeToolId ? (tool.type === 'shape' ? "#00ffff" : "#00ffcc") : "#008888"} 
+                transparent 
+                opacity={tool.id === activeToolId ? 0.4 : 0.2} 
+                depthWrite={false}
+                side={THREE.DoubleSide}
+              />
+           </mesh>
 
-          {/* Tegn en veldig tydelig linje/profil av kuttet på framsiden */}
-          {controlTarget === 'shape' && (
-             <mesh position={[0, 0, 0.5]}>
-                <lineLoop geometry={lineGeometry}>
-                   <lineBasicMaterial color="#ffffff" linewidth={2} depthTest={false} transparent opacity={0.8} />
-                </lineLoop>
-             </mesh>
-          )}
-
-          {/* Render Points for Shape Editing */}
-          {controlTarget === 'shape' && Object.entries(edgePoints).map(([side, points]) => (
-             points.map(p => (
-                 <mesh 
-                   key={p.id} 
-                   position={[p.x, p.y, 0.5]}
-                   ref={el => { if (el) pointRefs.current[p.id] = el; }}
-                   onClick={(e) => { e.stopPropagation(); setActivePointId({ id: p.id, side }); }}
-                 >
-                   <sphereGeometry args={[0.02, 16, 16]} />
-                   <meshBasicMaterial color={activePointId?.id === p.id ? "#ffffff" : sideColors[side]} depthTest={false} />
+           {/* Special visualization for Shape tool */}
+           {tool.type === 'shape' && tool.id === activeToolId && (
+              <>
+                 <mesh position={[0, 0, 0.5]}>
+                    <lineLoop geometry={lineGeometry}>
+                       <lineBasicMaterial color="#ffffff" linewidth={2} depthTest={false} transparent opacity={0.8} />
+                    </lineLoop>
                  </mesh>
-             ))
-          ))}
-          
-          {/* Boundary Reference Line to visualize the standard Box outline */}
-          {controlTarget === 'shape' && (
-             <mesh position={[0, 0, 0]}>
-                 <boxGeometry args={[1, 1, 1]} />
-                 <meshBasicMaterial wireframe transparent opacity={0.05} color="#ffffff" />
-             </mesh>
-          )}
+                 {Object.entries(edgePoints).map(([side, points]) => (
+                    points.map(p => (
+                        <mesh 
+                          key={p.id} 
+                          position={[p.x, p.y, 0.5]}
+                          ref={el => { if (el) pointRefs.current[p.id] = el; }}
+                          onClick={(e) => { e.stopPropagation(); setActivePointId({ id: p.id, side }); }}
+                        >
+                          <sphereGeometry args={[0.02, 16, 16]} />
+                          <meshBasicMaterial color={activePointId?.id === p.id ? "#ffffff" : sideColors[side]} depthTest={false} />
+                        </mesh>
+                    ))
+                 ))}
+              </>
+           )}
         </group>
+      ))}
+
+      {/* Global Transform Controls for ACTIVE Tool (outside loop for stability) */}
+      {controlTarget === 'boks' && toolRefs.current[activeToolId] && (
+         <TransformControls 
+           key={activeToolId}
+           object={toolRefs.current[activeToolId]} 
+           mode={mode}
+           rotationSnap={Math.PI / 12}
+           translationSnap={1}
+           onMouseDown={() => setOrbitEnabled(false)}
+           onMouseUp={() => setOrbitEnabled(true)}
+         />
       )}
 
-      {/* Box Control */}
-      {parts.length > 0 && activePartId && controlTarget === 'boks' && boxRef.current && (
-        <TransformControls
-          object={boxRef.current}
-          mode={mode}
-          rotationSnap={Math.PI / 12}
-          translationSnap={1}
-          onMouseDown={() => setOrbitEnabled(false)}
-          onMouseUp={() => setOrbitEnabled(true)}
-        />
-      )}
+      {/* Part Control */}
 
       {/* Part Control */}
       {parts.length > 0 && activePartId && controlTarget === 'part' && partRefs.current[activePartId] && (
@@ -310,8 +317,16 @@ function App() {
   const [mode, setMode] = useState('translate'); 
   const [orbitEnabled, setOrbitEnabled] = useState(true);
   const [controlTarget, setControlTarget] = useState('boks'); // 'boks' | 'part' | 'shape'
+  const [snapMode, setSnapMode] = useState(false);
 
-  const boxRef = useRef();
+  const [cuttingTools, setCuttingTools] = useState([
+    { id: 'tool-0', type: 'box', position: [0, 0, 0], rotation: [0, 0, 0], scale: [10, 10, 10] }
+  ]);
+  const [activeToolId, setActiveToolId] = useState('tool-0');
+
+  const toolRefs = useRef({});
+  const boxRef = { current: toolRefs.current[activeToolId] }; // Compatibility shim for existing logic
+
   const partRefs = useRef({});
   const controlsRef = useRef();
 
@@ -329,6 +344,44 @@ function App() {
   });
   const [activePointId, setActivePointId] = useState(null);
   const [history, setHistory] = useState([]);
+
+  const orderedVertices = useMemo(() => {
+    // Collect all points in order
+    const pts = [];
+    // Top side: Left to right
+    edgePoints.top.forEach(p => pts.push(new THREE.Vector2(p.x, p.y)));
+    // Right side: Top to bottom
+    edgePoints.right.forEach(p => pts.push(new THREE.Vector2(p.x, p.y)));
+    // Bottom side: Right to left
+    [...edgePoints.bottom].reverse().forEach(p => pts.push(new THREE.Vector2(p.x, p.y)));
+    // Left side: Bottom to top
+    [...edgePoints.left].reverse().forEach(p => pts.push(new THREE.Vector2(p.x, p.y)));
+
+    // Ensure we don't have duplicate sequential points (can break Shape)
+    const uniquePts = [];
+    pts.forEach((p, i) => {
+       if (i === 0) {
+          uniquePts.push(p);
+       } else {
+          const prev = uniquePts[uniquePts.length - 1];
+          if (p.distanceTo(prev) > 0.001) {
+             uniquePts.push(p);
+          }
+       }
+    });
+    return uniquePts;
+  }, [edgePoints]);
+
+  const extrudeGeometry = useMemo(() => {
+     if (orderedVertices.length < 3) return new THREE.BoxGeometry(1,1,1);
+     const shape = new THREE.Shape(orderedVertices);
+     const geo = new THREE.ExtrudeGeometry(shape, {
+        depth: 1,
+        bevelEnabled: false,
+     });
+     geo.translate(0, 0, -0.5);
+     return geo;
+  }, [orderedVertices]);
 
   const pushToHistory = useCallback(() => {
     setHistory(prev => {
@@ -413,19 +466,22 @@ function App() {
       if (isArrowKey) {
           e.preventDefault();
           
-          if (currentTarget === 'boks' && boxRef.current) {
-              if (e.shiftKey) {
-                  if (e.key === 'ArrowLeft') boxRef.current.rotation.y += rotateStep;
-                  if (e.key === 'ArrowRight') boxRef.current.rotation.y -= rotateStep;
-                  if (e.key === 'ArrowUp') boxRef.current.rotation.x -= rotateStep;
-                  if (e.key === 'ArrowDown') boxRef.current.rotation.x += rotateStep;
-              } else {
-                  if (e.key === 'ArrowLeft') boxRef.current.position.x -= moveStep;
-                  if (e.key === 'ArrowRight') boxRef.current.position.x += moveStep;
-                  if (e.key === 'ArrowUp') boxRef.current.position.z -= moveStep;
-                  if (e.key === 'ArrowDown') boxRef.current.position.z += moveStep;
-                  if (e.key === 'PageUp') boxRef.current.position.y += moveStep;
-                  if (e.key === 'PageDown') boxRef.current.position.y -= moveStep;
+          if (currentTarget === 'boks') {
+              const currentBox = toolRefs.current[stateRef.current.activeToolId];
+              if (currentBox) {
+                  if (e.shiftKey) {
+                      if (e.key === 'ArrowLeft') currentBox.rotation.y += rotateStep;
+                      if (e.key === 'ArrowRight') currentBox.rotation.y -= rotateStep;
+                      if (e.key === 'ArrowUp') currentBox.rotation.x -= rotateStep;
+                      if (e.key === 'ArrowDown') currentBox.rotation.x += rotateStep;
+                  } else {
+                      if (e.key === 'ArrowLeft') currentBox.position.x -= moveStep;
+                      if (e.key === 'ArrowRight') currentBox.position.x += moveStep;
+                      if (e.key === 'ArrowUp') currentBox.position.z -= moveStep;
+                      if (e.key === 'ArrowDown') currentBox.position.z += moveStep;
+                      if (e.key === 'PageUp') currentBox.position.y += moveStep;
+                      if (e.key === 'PageDown') currentBox.position.y -= moveStep;
+                  }
               }
           } else if (currentTarget === 'part' && currentActiveId) {
               setParts(prev => prev.map(p => {
@@ -451,16 +507,17 @@ function App() {
                       return { ...p, position: pos };
                   }
               }));
+          } else if (currentTarget === 'shape') {
+              // Optionally handle arrow keys for direct point movement here? 
+              // Usually mouse is better for points.
           } else {
               // --- Fallback: Camera Movement (if no target is active) ---
               if (controlsRef.current) {
-                  // TrackballControls from drei exposes some methods but we can simple rotate/pan the scene/camera
                   const cam = controlsRef.current.object;
                   const rotateOrbit = (angle) => {
-                      // Simple rotation around Y for camera
                       const quat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), angle);
                       cam.position.applyQuaternion(quat);
-                      cam.lookAt(0, 0, 0); // Re-focus on center (or target)
+                      cam.lookAt(0, 0, 0); 
                       controlsRef.current.update();
                   };
                   
@@ -583,18 +640,31 @@ function App() {
         activeMesh.updateMatrixWorld(true);
         boxRef.current.updateMatrixWorld(true);
 
-        const toolMesh = boxRef.current.getObjectByName("toolMesh");
-        const toolGeometry = toolMesh.geometry.clone();
+        const { sliceModel } = await import('./utils/slicer');
         
-        const { partA, partB } = await sliceModel(targetPart.geometry, toolGeometry, boxRef.current.matrixWorld, activeMesh.matrixWorld);
+        // Build toolsData array from all cutting tools in the scene
+        const toolsData = cuttingTools.map(tool => {
+           const mesh = toolRefs.current[tool.id];
+           if (!mesh) return null;
+           
+           let geometry = mesh.getObjectByName("toolMesh").geometry;
+           if (tool.type === 'shape') {
+              geometry = extrudeGeometry;
+           }
+
+           return { 
+              geometry: geometry, 
+              matrixWorld: mesh.matrixWorld.clone() 
+           };
+        }).filter(t => t !== null);
+
+        const { partA, partsB } = await sliceModel(targetPart.geometry, toolsData, activeMesh.matrixWorld);
         
-        const partPos = activeMesh.position.toArray();
-        const partQuat = activeMesh.quaternion.toArray();
-        const partScale = activeMesh.scale.toArray();
+        const partPos = [0, 0, 0];
+        const partQuat = [0, 0, 0, 1];
+        const partScale = [1, 1, 1];
 
         const id1 = Date.now().toString() + "_a";
-        const id2 = Date.now().toString() + "_b";
-        
         const newPartA = {
           id: id1,
           name: `${targetPart.name}_utside`,
@@ -604,19 +674,20 @@ function App() {
           quaternion: partQuat,
           scale: partScale
         };
-        const newPartB = {
-          id: id2,
-          name: `${targetPart.name}_innside`,
-          geometry: partB,
+        
+        const newPartsB = partsB.map((geo, idx) => ({
+          id: `${id1}_b_${idx}`,
+          name: `${targetPart.name}_del_${idx + 1}`,
+          geometry: geo,
           visible: true,
           position: partPos,
           quaternion: partQuat,
           scale: partScale
-        };
+        }));
 
         setParts(prev => {
           const filtered = prev.filter(item => item.id !== activePartId);
-          return [...filtered, newPartA, newPartB];
+          return [...filtered, newPartA, ...newPartsB];
         });
         
         setActivePartId(newPartA.id);
@@ -628,6 +699,7 @@ function App() {
       setProcessing(false);
     }, 100);
   };
+
 
   return (
     <ErrorBoundary>
@@ -664,50 +736,134 @@ function App() {
           mode={mode}
           orbitEnabled={orbitEnabled}
           setOrbitEnabled={setOrbitEnabled}
-          boxRef={boxRef}
-          controlTarget={controlTarget}
           partRefs={partRefs}
+          controlTarget={controlTarget}
+          setControlTarget={setControlTarget}
           edgePoints={edgePoints}
           activePointId={activePointId}
           setActivePointId={setActivePointId}
           setEdgePoints={setEdgePoints}
           controlsRef={controlsRef}
+          snapMode={snapMode}
+          setSnapMode={setSnapMode}
+          cuttingTools={cuttingTools}
+          setCuttingTools={setCuttingTools}
+          activeToolId={activeToolId}
+          setActiveToolId={setActiveToolId}
+          toolRefs={toolRefs}
+          extrudeGeometry={extrudeGeometry}
+          orderedVertices={orderedVertices}
         />
       </Canvas>
 
       <div style={{ position: 'absolute', top: 20, left: 20, backgroundColor: 'rgba(0,0,0,0.7)', padding: '15px', borderRadius: 8, pointerEvents: 'none', border: '1px solid #444', transition: 'all 0.3s ease' }}>
         <h1 style={{ margin: '0 0 10px 0', fontSize: '1.2rem', color: '#00ffcc' }}>ModelSlicer</h1>
         
-        {parts.length > 0 && (
-          <div style={{ marginBottom: 15 }}>
-             <p style={{ margin: '5px 0', fontSize: '0.9rem', fontWeight: 'bold', color: '#00ff66' }}>
-                [T] Verktøy: {controlTarget === 'boks' ? 'Styrer Kutteboks' : controlTarget === 'part' ? 'Flytter Modell' : 'Tegn Snitt'}
-             </p>
-             <p style={{ margin: '2px 0', fontSize: '0.8rem', opacity: 0.7 }}>[W] Flytt | [E] Roter | [R] Skaler</p>
-          </div>
-        )}
+        <div style={{ marginBottom: 15 }}>
+           <p style={{ margin: '5px 0', fontSize: '0.9rem', fontWeight: 'bold', color: '#00ff66' }}>
+              [T] Verktøy: {controlTarget === 'boks' ? 'Styrer Kutteboks' : controlTarget === 'part' ? 'Flytter Modell' : 'Tegn Snitt'}
+           </p>
+           <p style={{ margin: '2px 0', fontSize: '0.8rem', opacity: 0.7 }}>Aktiv Verktøy: {activeToolId}</p>
+           
+           {/* Tool Type Selector */}
+           <div style={{ display: 'flex', gap: '5px', marginTop: '10px' }}>
+              <button 
+                onClick={() => {
+                   setCuttingTools(prev => prev.map(t => t.id === activeToolId ? { ...t, type: 'box' } : t));
+                }} 
+                style={{ 
+                   flex: 1, padding: '5px', fontSize: '0.7rem', cursor: 'pointer', pointerEvents: 'auto',
+                   backgroundColor: cuttingTools.find(t => t.id === activeToolId)?.type === 'box' ? '#00ffcc' : '#333',
+                   color: cuttingTools.find(t => t.id === activeToolId)?.type === 'box' ? '#000' : '#fff'
+                }}
+              >
+                Standard Boks
+              </button>
+              <button 
+                onClick={() => {
+                   setCuttingTools(prev => prev.map(t => t.id === activeToolId ? { ...t, type: 'shape' } : t));
+                }} 
+                style={{ 
+                   flex: 1, padding: '5px', fontSize: '0.7rem', cursor: 'pointer', pointerEvents: 'auto',
+                   backgroundColor: cuttingTools.find(t => t.id === activeToolId)?.type === 'shape' ? '#00ffff' : '#333',
+                   color: cuttingTools.find(t => t.id === activeToolId)?.type === 'shape' ? '#000' : '#fff'
+                }}
+              >
+                Tilpasset Snitt
+              </button>
+           </div>
+
+           <div style={{ display: 'flex', gap: '5px', marginTop: '5px' }}>
+              <button 
+                onClick={() => {
+                   const newId = `tool-${Date.now()}`;
+                   setCuttingTools(prev => [...prev, { id: newId, type: 'box', position: [0, 0, 0], rotation: [0, 0, 0], scale: [10, 10, 10] }]);
+                   setActiveToolId(newId);
+                   setControlTarget('boks');
+                }} 
+                style={{ flex: 1, padding: '5px', fontSize: '0.7rem', cursor: 'pointer', pointerEvents: 'auto' }}
+              >
+                + Ny Boks
+              </button>
+              <button 
+                onClick={() => {
+                   if (cuttingTools.length <= 1) return;
+                   const filtered = cuttingTools.filter(t => t.id !== activeToolId);
+                   setCuttingTools(filtered);
+                   setActiveToolId(filtered[0].id);
+                }} 
+                style={{ flex: 1, padding: '5px', fontSize: '0.7rem', cursor: 'pointer', pointerEvents: 'auto' }}
+              >
+                - Fjern Aktiv
+              </button>
+           </div>
+        </div>
 
         <div style={{ padding: '8px', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 4 }}>
            <h4 style={{ margin: '0 0 5px 0', fontSize: '0.8rem', textTransform: 'uppercase', opacity: 0.5 }}>Kontroller:</h4>
            <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '5px 10px', fontSize: '0.8rem' }}>
-              <span style={{ color: '#00ffcc', fontWeight: 'bold' }}>Piltaster:</span> <span>Flytt modell / Roter kamera</span>
-              <span style={{ color: '#00ffcc', fontWeight: 'bold' }}>Shift + Pil:</span> <span>Roter modell (15°)</span>
-              <span style={{ color: '#00ffcc', fontWeight: 'bold' }}>Ctrl + Pil:</span> <span>Fin-justering / Panorering</span>
-              <span style={{ color: '#00ffcc', fontWeight: 'bold' }}>Alt + Scroll:</span> <span>Skaler modell (Ingen zoom)</span>
-              <span style={{ color: '#00ffcc', fontWeight: 'bold' }}>[T]:</span> <span>Bytt Verktøy (Boks/Modell)</span>
+              <span style={{ color: '#00ffcc', fontWeight: 'bold' }}>Klikk boks:</span> <span>Velg boks i scenen</span>
+              <span style={{ color: '#00ffcc', fontWeight: 'bold' }}>W / E / R:</span> <span>Flytt / Roter / Skaler boks</span>
+              <span style={{ color: '#00ffcc', fontWeight: 'bold' }}>Pil/Shift:</span> <span>Flytt/Roter valgt boks</span>
+              <span style={{ color: '#00ffcc', fontWeight: 'bold' }}>[T]:</span> <span>Bytt Fokus (Boks / Modell / Snitt)</span>
            </div>
         </div>
 
-        <button 
-           onClick={() => {
-              if (controlsRef.current) {
-                 controlsRef.current.reset();
-              }
-           }}
-           style={{ marginTop: 15, width: '100%', padding: '8px', cursor: 'pointer', backgroundColor: '#333', color: '#ccc', border: '1px solid #555', borderRadius: 4, fontSize: '0.8rem', pointerEvents: 'auto' }}
-        >
-           🔄 Nullstill Kamera
-        </button>
+         <button 
+            onClick={() => setSnapMode(!snapMode)}
+            style={{ 
+              marginTop: 15, 
+              width: '100%', 
+              padding: '10px', 
+              cursor: 'pointer', 
+              backgroundColor: snapMode ? '#ff00ff' : '#222', 
+              color: 'white', 
+              border: '1px solid #ff00ff', 
+              borderRadius: 4, 
+              fontWeight: 'bold',
+              pointerEvents: 'auto'
+            }}
+         >
+            🎯 {snapMode ? 'Klikk på fjes nå!' : 'Aktiver Snap to Face'}
+         </button>
+
+         <button 
+            onClick={() => controlsRef.current?.reset()}
+            style={{ 
+              marginTop: 10, 
+              width: '100%', 
+              padding: '10px', 
+              cursor: 'pointer', 
+              backgroundColor: '#333', 
+              color: '#ccc', 
+              border: '1px solid #555', 
+              borderRadius: 4, 
+              fontSize: '0.8rem', 
+              pointerEvents: 'auto' 
+            }}
+         >
+            🔄 Nullstill Kamera
+         </button>
 
         {parts.length === 0 && (
           <p style={{ margin: '15px 0 0 0', opacity: 0.8, fontSize: '0.9rem', borderTop: '1px solid #333', paddingTop: '10px' }}>
