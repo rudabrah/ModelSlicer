@@ -193,8 +193,8 @@ function Scene({ parts, activePartId, mode, orbitEnabled, setOrbitEnabled, boxRe
 
       {/* The Cutting Box (Custom Tool Volume) */}
       {parts.length > 0 && activePartId && (
-        <group position={[0,0,0]} scale={[25, 25, 25]}>
-          <mesh ref={(el) => { if (el) boxRef.current = el; }} geometry={extrudeGeometry}>
+        <group ref={(el) => { if (el) boxRef.current = el; }} position={[0,0,0]}>
+          <mesh name="toolMesh" geometry={extrudeGeometry}>
              {controlTarget === 'boks' ? (
                <meshBasicMaterial color="#ff0000" transparent opacity={0.15} depthWrite={false} side={THREE.DoubleSide} />
              ) : controlTarget === 'shape' ? (
@@ -393,8 +393,15 @@ function App() {
             setParts(prev => [...prev, newPart]);
             setActivePartId(newPart.id);
             setControlTarget('boks');
-            setEdgePoints({ top: [], bottom: [], left: [], right: [] });
+            setEdgePoints({ top: [], bottom: [], left: [] , right: [] });
             setActivePointId(null);
+            
+            // Set initial reasonable scale for the cutting box
+            if (boxRef.current) {
+                boxRef.current.scale.set(25, 25, 25);
+                boxRef.current.position.set(0, 0, 0);
+                boxRef.current.quaternion.set(0, 0, 0, 1);
+            }
         } else {
             setErrorMsg("Kunne ikke lese geometri fra filen.");
         }
@@ -434,7 +441,8 @@ function App() {
         activeMesh.updateMatrixWorld(true);
         boxRef.current.updateMatrixWorld(true);
 
-        const toolGeometry = boxRef.current.geometry.clone();
+        const toolMesh = boxRef.current.getObjectByName("toolMesh");
+        const toolGeometry = toolMesh.geometry.clone();
         
         const { partA, partB } = await sliceModel(targetPart.geometry, toolGeometry, boxRef.current.matrixWorld, activeMesh.matrixWorld);
         
